@@ -1,0 +1,13 @@
+{
+  "name": "debugging-study-server",
+  "private": true,
+  "version": "0.1.0",
+  "main": "src/app.js",
+  "scripts": {
+    "dev": "node src/app.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
