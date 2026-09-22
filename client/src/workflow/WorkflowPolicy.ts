@@ -44,7 +44,11 @@ export const workflowPolicy = {
     if (to === from) return true;
 
     if (toIndex <= fromIndex) {
-      return fromIndex === toIndex || (from === 'run' && to === 'debug_diagnose');
+      return (
+        fromIndex === toIndex ||
+        (from === 'run' && to === 'debug_diagnose') ||
+        (from === 'verify_tests' && to === 'fix')
+      );
     }
 
     const requiredPrior = STEP_ORDER.slice(0, toIndex);

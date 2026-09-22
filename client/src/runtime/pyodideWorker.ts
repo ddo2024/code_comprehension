@@ -1,25 +1,54 @@
-// Ensure Pyodide is loaded in browser-only runtime.
 const PYODIDE_URL = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js';
 
-let pyodide: any;
-let workerReady = false;
-let timeoutHandle: number | undefined;
+let pyodide: any = null;
+let initInFlight: Promise<void> | null = null;
+let stdoutBuffer = '';
+let stderrBuffer = '';
 
-self.onmessage = async (event: MessageEvent) => {
-  const message = event.data;
+const getNamespaceScript = (code: string) => {
+  const sanitized = String(code ?? '');
+  return [
+    'import builtins',
+    '__study_ns__ = {"__builtins__": builtins.__dict__}',
+    `exec(${JSON.stringify(sanitized)}, __study_ns__, __study_ns__)`,
+  ].join('\n');
+};
 
-  if (message.type === 'init') {
-    try {
-      // @ts-expect-error web worker global importScripts is available
+const initializePyodide = async () => {
+  if (pyodide) return;
+
+  if (!initInFlight) {
+    initInFlight = (async () => {
+      // @ts-expect-error importScripts is available in this classic worker
       self.importScripts(PYODIDE_URL);
       // @ts-expect-error pyodide attaches to self
       pyodide = await self.loadPyodide({
         indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/',
       });
 
-      pyodide.setStdout({ batched: (text: string) => self.postMessage({ type: 'stdout', data: text }) });
-      pyodide.setStderr({ batched: (text: string) => self.postMessage({ type: 'stderr', data: text }) });
-      workerReady = true;
+      pyodide.setStdout({ batched: (text: string) => {
+        stdoutBuffer += text;
+        self.postMessage({ type: 'stdout', data: text });
+      }});
+
+      pyodide.setStderr({ batched: (text: string) => {
+        stderrBuffer += text;
+        self.postMessage({ type: 'stderr', data: text });
+      }});
+
+      pyodide.runPython('1 + 1');
+    })();
+  }
+
+  await initInFlight;
+};
+
+self.onmessage = async (event: MessageEvent) => {
+  const message = event.data;
+
+  if (message.type === 'init') {
+    try {
+      await initializePyodide();
       self.postMessage({ type: 'ready' });
     } catch (error) {
       self.postMessage({
@@ -30,60 +59,46 @@ self.onmessage = async (event: MessageEvent) => {
     return;
   }
 
-  if (!workerReady) {
-    self.postMessage({ type: 'error', message: 'Pyodide worker not ready' });
-    return;
-  }
-
-  if (message.type === 'terminate') {
-    if (timeoutHandle) clearTimeout(timeoutHandle);
-    self.close();
-    return;
-  }
-
   if (message.type === 'run') {
+    if (!pyodide) {
+      self.postMessage({ type: 'error', message: 'Pyodide worker not ready' });
+      return;
+    }
+
     const started = performance.now();
-    const timeoutMs = message.timeoutMs ?? 5000;
-
-    if (timeoutHandle) clearTimeout(timeoutHandle);
-
-    timeoutHandle = self.setTimeout(() => {
-      self.postMessage({
-        type: 'timeout',
-        data: {
-          message: 'Execution timed out',
-          durationMs: timeoutMs,
-        },
-      });
-    }, timeoutMs);
+    stdoutBuffer = '';
+    stderrBuffer = '';
 
     try {
-      pyodide.runPython(message.code || '');
-      const durationMs = performance.now() - started;
+      const combined = [message.runnerCode ?? '', message.code ?? ''].filter(Boolean).join('\n');
+      pyodide.runPython(getNamespaceScript(combined));
+
       self.postMessage({
         type: 'result',
         data: {
-          success: true,
-          stdout: '',
-          stderr: '',
-          durationMs,
-          runNumber: 1,
+          runId: message.runId,
+          status: 'success',
+          stdout: stdoutBuffer,
+          stderr: stderrBuffer,
+          durationMs: Math.max(0, performance.now() - started),
         },
       });
     } catch (error) {
-      const durationMs = performance.now() - started;
+      const text = error instanceof Error ? error.message : String(error);
+      const normalized = /SyntaxError|IndentationError|Expected|expected|unexpected EOF/.test(text)
+        ? 'syntax_error'
+        : 'runtime_error';
+
       self.postMessage({
         type: 'result',
         data: {
-          success: false,
-          stdout: '',
-          stderr: error instanceof Error ? error.message : String(error),
-          durationMs,
-          runNumber: 1,
+          runId: message.runId,
+          status: normalized,
+          stdout: stdoutBuffer,
+          stderr: text,
+          durationMs: Math.max(0, performance.now() - started),
         },
       });
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
     }
   }
 };

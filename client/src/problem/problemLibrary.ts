@@ -11,6 +11,7 @@ export interface ProblemDefinition {
   title: string;
   description: string;
   buggyCode: string;
+  runCode?: string;
   expectedBehavior: string;
   hiddenVerificationTests: VerificationTest[];
   bugCategory: 'off_by_one' | 'control_flow' | 'variable_scope' | 'string_handling' | 'logic_error';
@@ -36,6 +37,7 @@ def sum_even_numbers(n):
             total += i
     return total
 `,
+  runCode: 'print(sum_even_numbers(10))',
   expectedBehavior: 'Returns the sum of even integers from 2 to n inclusive.',
   hiddenVerificationTests: [
     { name: 'n=5', input: [5], expected: 6, assertion: 'equals' },
