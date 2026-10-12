@@ -8,6 +8,7 @@ export interface VerificationTest {
 export interface ProblemDefinition {
   problemId: string;
   version: string;
+  entryPoint: string;
   title: string;
   description: string;
   buggyCode: string;
@@ -27,12 +28,13 @@ export interface ProblemDefinition {
 export const sampleProblem: ProblemDefinition = {
   problemId: 'p_01',
   version: '1.0.0',
+  entryPoint: 'sum_even_numbers',
   title: 'Sum of Evens',
   description: 'Write a function that returns the sum of all even numbers from 1 to n inclusive.',
   buggyCode: `
 def sum_even_numbers(n):
     total = 0
-    for i in range(1, n + 1):
+    for i in range(1, n):
         if i % 2 == 0:
             total += i
     return total
@@ -43,6 +45,7 @@ def sum_even_numbers(n):
     { name: 'n=5', input: [5], expected: 6, assertion: 'equals' },
     { name: 'n=10', input: [10], expected: 30, assertion: 'equals' },
     { name: 'n=1', input: [1], expected: 0, assertion: 'equals' },
+    { name: 'n=2', input: [2], expected: 2, assertion: 'equals' },
   ],
   bugCategory: 'off_by_one',
   difficulty: 'easy',

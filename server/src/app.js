@@ -104,6 +104,14 @@ const insertSessionStmt = db.prepare(`
   ) VALUES (?, ?, ?, ?, ?)
 `);
 
+const insertAttemptStmt = db.prepare(`
+  INSERT INTO problem_attempts (
+    attempt_id, session_id, problem_id, problem_version, started_at
+  ) VALUES (?, ?, ?, ?, ?)
+`);
+
+const findAttemptStmt = db.prepare('SELECT 1 FROM problem_attempts WHERE attempt_id = ?');
+
 const insertStudentStmt = db.prepare(`
   INSERT OR IGNORE INTO students (student_id, study_condition, created_at)
   VALUES (?, ?, ?)
@@ -116,6 +124,12 @@ const insertTelemetryStmt = db.prepare(`
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
+const insertResponseStmt = db.prepare(`
+  INSERT OR IGNORE INTO responses (
+    response_id, attempt_id, response_type, response_text, submitted_at
+  ) VALUES (?, ?, ?, ?, ?)
+`);
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
@@ -126,18 +140,30 @@ app.post('/api/session/start', (req, res) => {
     const studyCondition = req.body?.studyCondition ?? 'scaffolded';
     const appVersion = req.body?.appVersion ?? '0.1.0';
     const studyProtocolVersion = req.body?.studyProtocolVersion ?? '1.0';
+    const problemId = req.body?.problemId;
+    const problemVersion = req.body?.problemVersion;
 
     if (!studentId || typeof studentId !== 'string') {
       return res.status(400).json({ error: 'studentId is required' });
     }
+    if (!['scaffolded', 'unscaffolded'].includes(studyCondition)) {
+      return res.status(400).json({ error: 'studyCondition must be scaffolded or unscaffolded' });
+    }
+    if ((problemId && typeof problemVersion !== 'string') || (!problemId && problemVersion)) {
+      return res.status(400).json({ error: 'problemId and problemVersion must be provided together' });
+    }
 
     const startedAt = new Date().toISOString();
     const sessionId = crypto.randomUUID();
+    const attemptId = problemId ? crypto.randomUUID() : null;
 
     db.exec('BEGIN IMMEDIATE;');
     try {
       insertStudentStmt.run(studentId, studyCondition, startedAt);
       insertSessionStmt.run(sessionId, studentId, startedAt, appVersion, studyProtocolVersion);
+      if (attemptId) {
+        insertAttemptStmt.run(attemptId, sessionId, problemId, problemVersion, startedAt);
+      }
       db.exec('COMMIT;');
     } catch (error) {
       db.exec('ROLLBACK;');
@@ -146,6 +172,7 @@ app.post('/api/session/start', (req, res) => {
 
     return res.status(201).json({
       sessionId,
+      attemptId,
       studentId,
       startedAt,
       studyCondition,
@@ -155,6 +182,42 @@ app.post('/api/session/start', (req, res) => {
   } catch (error) {
     console.error('session start failed', error);
     return res.status(500).json({ error: 'Failed to create session.' });
+  }
+});
+
+app.post('/api/session/responses', (req, res) => {
+  try {
+    const { responseId, attemptId, responseType, responseText } = req.body ?? {};
+    const allowedResponseTypes = ['prediction', 'diagnosis', 'explanation'];
+
+    if (typeof responseId !== 'string' || !responseId) {
+      return res.status(400).json({ error: 'responseId is required' });
+    }
+    if (typeof attemptId !== 'string' || !attemptId) {
+      return res.status(400).json({ error: 'attemptId is required' });
+    }
+    if (!allowedResponseTypes.includes(responseType)) {
+      return res.status(400).json({ error: 'responseType must be prediction, diagnosis, or explanation' });
+    }
+    if (typeof responseText !== 'string' || !responseText.trim() || responseText.length > 20000) {
+      return res.status(400).json({ error: 'responseText must be a non-empty string of at most 20000 characters' });
+    }
+    if (!findAttemptStmt.get(attemptId)) {
+      return res.status(404).json({ error: 'Problem attempt was not found' });
+    }
+
+    insertResponseStmt.run(
+      responseId,
+      attemptId,
+      responseType,
+      responseText,
+      new Date().toISOString()
+    );
+
+    return res.status(201).json({ saved: true, responseId });
+  } catch (error) {
+    console.error('response insert failed', error);
+    return res.status(500).json({ error: 'Failed to save response.' });
   }
 });
 

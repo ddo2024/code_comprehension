@@ -27,6 +27,14 @@ const STEP_ORDER: WorkflowState[] = [
   'completed',
 ];
 
+const API_BASE_URL = 'http://localhost:3001';
+
+interface StudySession {
+  sessionId: string;
+  attemptId: string;
+  studentId: string;
+}
+
 function App() {
   const [state, setState] = useState<WorkflowState>('problem_description');
   const [code, setCode] = useState(sampleProblem.buggyCode);
@@ -37,8 +45,17 @@ function App() {
   const [diagnosisSubmitted, setDiagnosisSubmitted] = useState(false);
   const [explanationSubmitted, setExplanationSubmitted] = useState(false);
   const [verificationPassed, setVerificationPassed] = useState(false);
-  const [verificationOutcome, setVerificationOutcome] = useState<{ passed: boolean; summary: string } | null>(null);
+  const [verificationOutcome, setVerificationOutcome] = useState<{
+    passed: boolean;
+    results: Array<{ name: string; passed: boolean; expected: string; actual: string }>;
+  } | null>(null);
   const [runCount, setRunCount] = useState(0);
+  const [participantCode, setParticipantCode] = useState('');
+  const [studySession, setStudySession] = useState<StudySession | null>(null);
+  const [sessionStarting, setSessionStarting] = useState(false);
+  const [sessionError, setSessionError] = useState('');
+  const [responseSaving, setResponseSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
 
   const runner = usePyodideRunner();
   const currentIndex = STEP_ORDER.indexOf(state);
@@ -72,22 +89,91 @@ function App() {
     return true;
   };
 
-  const handleSubmitPrediction = () => {
+  const handleStartSession = async () => {
+    const studentId = participantCode.trim();
+    if (!studentId) {
+      setSessionError('Enter your study participant code to begin.');
+      return;
+    }
+
+    setSessionStarting(true);
+    setSessionError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/session/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId,
+          studyCondition: 'scaffolded',
+          appVersion: '0.1.0',
+          studyProtocolVersion: '1.0',
+          problemId: sampleProblem.problemId,
+          problemVersion: sampleProblem.version,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.attemptId) {
+        throw new Error(data.error ?? 'Could not start the study session.');
+      }
+
+      setStudySession({ sessionId: data.sessionId, attemptId: data.attemptId, studentId });
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : 'Could not connect to the study server.');
+    } finally {
+      setSessionStarting(false);
+    }
+  };
+
+  const saveResponse = async (responseType: 'prediction' | 'diagnosis' | 'explanation', responseText: string) => {
+    if (!studySession) {
+      setSaveError('No study session is active. Start a session before submitting answers.');
+      return false;
+    }
+
+    setResponseSaving(true);
+    setSaveError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/session/responses`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          responseId: crypto.randomUUID(),
+          attemptId: studySession.attemptId,
+          responseType,
+          responseText,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.saved) {
+        throw new Error(data.error ?? 'The server did not save this answer.');
+      }
+      return true;
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Could not connect to the study server. Your answer was not submitted.');
+      return false;
+    } finally {
+      setResponseSaving(false);
+    }
+  };
+
+  const handleSubmitPrediction = async () => {
     if (!prediction.trim()) {
       alert('Please enter a prediction before continuing.');
       return;
     }
 
+    if (!(await saveResponse('prediction', prediction))) return;
     setPredictionSubmitted(true);
     transition('debug_diagnose', { predictionSubmitted: true });
   };
 
-  const handleSubmitDiagnosis = () => {
+  const handleSubmitDiagnosis = async () => {
     if (!diagnosis.trim()) {
       alert('Please record your diagnosis before continuing.');
       return;
     }
 
+    if (!(await saveResponse('diagnosis', diagnosis))) return;
     setDiagnosisSubmitted(true);
     transition('run', { diagnosisSubmitted: true });
   };
@@ -107,26 +193,88 @@ function App() {
     runner.runCode(code, sampleProblem.runCode ?? '', 5000);
   };
 
-  const handleVerify = () => {
-    const passed = code.includes('print(') && code.includes('sum_even_numbers') && code.includes('return');
+  const handleVerify = async () => {
+    if (!runner.ready || runner.running) return;
 
-    setVerificationPassed(passed);
-    setVerificationOutcome({
-      passed,
-      summary: passed ? '✓ All tests passed.' : '2 of 4 tests passed.',
-    });
+    setVerificationOutcome(null);
+    const tests = sampleProblem.hiddenVerificationTests;
+    const testData = tests.map((test) => ({
+      name: test.name,
+      input: test.input ?? [],
+      expected: test.expected,
+      assertion: test.assertion,
+    }));
+    const runnerCode = [
+      'import json as __study_json__',
+      `__study_cases__ = __study_json__.loads(${JSON.stringify(JSON.stringify(testData))})`,
+      '__study_results__ = []',
+      'for __study_case__ in __study_cases__:',
+      '    __study_expected__ = __study_case__.get("expected")',
+      '    __study_actual__ = None',
+      '    __study_passed__ = False',
+      '    try:',
+      `        __study_function__ = globals()[${JSON.stringify(sampleProblem.entryPoint)}]`,
+      '        if __study_case__["assertion"] == "raises":',
+      '            try:',
+      '                __study_actual__ = __study_function__(*__study_case__["input"])',
+      '            except Exception as __study_error__:',
+      '                __study_actual__ = f"{type(__study_error__).__name__}: {__study_error__}"',
+      '                __study_passed__ = True',
+      '        else:',
+      '            __study_actual__ = __study_function__(*__study_case__["input"])',
+      '            if __study_case__["assertion"] == "equals":',
+      '                __study_passed__ = __study_actual__ == __study_expected__',
+      '            elif __study_case__["assertion"] == "contains":',
+      '                __study_passed__ = __study_expected__ in __study_actual__',
+      '    except Exception as __study_error__:',
+      '        __study_actual__ = f"{type(__study_error__).__name__}: {__study_error__}"',
+      '    __study_results__.append({',
+      '        "name": __study_case__["name"],',
+      '        "passed": __study_passed__,',
+      '        "expected": "an exception" if __study_case__["assertion"] == "raises" else repr(__study_expected__),',
+      '        "actual": repr(__study_actual__),',
+      '    })',
+      'print("__STUDY_TEST_RESULTS__" + __study_json__.dumps(__study_results__))',
+    ].join('\n');
 
-    if (passed) {
-      transition('explain_fix', { lastVerificationPassed: true });
+    const runResult = await runner.runCode(code, runnerCode, 5000, true);
+    const marker = '__STUDY_TEST_RESULTS__';
+    const resultLine = runResult?.stdout.split('\n').find((line) => line.startsWith(marker));
+    let results: Array<{ name: string; passed: boolean; expected: string; actual: string }>;
+
+    if (runResult?.status === 'success' && resultLine) {
+      try {
+        results = JSON.parse(resultLine.slice(marker.length));
+      } catch {
+        results = tests.map((test) => ({
+          name: test.name,
+          passed: false,
+          expected: String(test.expected),
+          actual: 'Could not read the test result.',
+        }));
+      }
+    } else {
+      const errorText = runResult?.stderr || 'Python environment is not ready. Try again.';
+      results = tests.map((test) => ({
+        name: test.name,
+        passed: false,
+        expected: String(test.expected),
+        actual: errorText,
+      }));
     }
+
+    const passed = results.length > 0 && results.every((result) => result.passed);
+    setVerificationPassed(passed);
+    setVerificationOutcome({ passed, results });
   };
 
-  const handleSubmitExplanation = () => {
+  const handleSubmitExplanation = async () => {
     if (!explanation.trim()) {
       alert('Please explain your fix before finishing.');
       return;
     }
 
+    if (!(await saveResponse('explanation', explanation))) return;
     setExplanationSubmitted(true);
     transition('completed', { explanationSubmitted: true });
   };
@@ -219,7 +367,8 @@ function App() {
       return (
         <div className="output-box success">
           <strong>Verification complete</strong>
-          <pre>✓ All tests passed</pre>
+          <pre>{verificationOutcome.results.length} of {verificationOutcome.results.length} tests passed.</pre>
+          {renderVerificationCases(verificationOutcome.results)}
         </div>
       );
     }
@@ -227,10 +376,26 @@ function App() {
     return (
       <div className="output-box warning">
         <strong>Verification incomplete</strong>
-        <pre>{verificationOutcome.summary}</pre>
+        <pre>{verificationOutcome.results.filter((result) => result.passed).length} of {verificationOutcome.results.length} tests passed.</pre>
+        {renderVerificationCases(verificationOutcome.results)}
       </div>
     );
   };
+
+  const renderVerificationCases = (results: Array<{ name: string; passed: boolean; expected: string; actual: string }>) => (
+    <ul className="verification-list">
+      {results.map((result) => (
+        <li className={result.passed ? 'verification-case passed' : 'verification-case failed'} key={result.name}>
+          <div className="verification-case-heading">
+            <strong>{result.passed ? 'PASS' : 'FAIL'}</strong>
+            <span>{result.name}</span>
+          </div>
+          <div>Expected: <code>{result.expected}</code></div>
+          <div>Actual: <code>{result.actual}</code></div>
+        </li>
+      ))}
+    </ul>
+  );
 
   const renderStepContent = () => {
     if (state === 'problem_description') {
@@ -284,8 +449,11 @@ function App() {
           </div>
           <label className="field-label">What do you think this program will do?</label>
           <textarea value={prediction} onChange={(e) => setPrediction(e.target.value)} rows={6} />
+          {saveError && <div className="output-box error" role="alert">{saveError}</div>}
           <div className="action-row">
-            <button disabled={!prediction.trim()} onClick={handleSubmitPrediction}>Submit Prediction</button>
+            <button disabled={!prediction.trim() || responseSaving} onClick={handleSubmitPrediction}>
+              {responseSaving ? 'Saving...' : 'Submit Prediction'}
+            </button>
           </div>
         </div>
       );
@@ -304,8 +472,11 @@ function App() {
           </div>
           <label className="field-label">What do you think is wrong with this program?</label>
           <textarea value={diagnosis} onChange={(e) => setDiagnosis(e.target.value)} rows={6} />
+          {saveError && <div className="output-box error" role="alert">{saveError}</div>}
           <div className="action-row">
-            <button disabled={!diagnosis.trim()} onClick={handleSubmitDiagnosis}>Continue to Run</button>
+            <button disabled={!diagnosis.trim() || responseSaving} onClick={handleSubmitDiagnosis}>
+              {responseSaving ? 'Saving...' : 'Continue to Run'}
+            </button>
           </div>
         </div>
       );
@@ -322,8 +493,13 @@ function App() {
             <div className="panel-label">Code</div>
             <pre>{code}</pre>
           </div>
+          <div className="run-call-panel">
+            <div className="panel-label">Run call</div>
+            <p>The app runs this call with your function and displays the value it returns:</p>
+            <pre>{sampleProblem.runCode}</pre>
+          </div>
           <div className="result-panel">
-            <h3>Program Output</h3>
+            <h3>Output from this call</h3>
             {renderExecutionStatus()}
           </div>
           <div className="action-row">
@@ -372,8 +548,14 @@ function App() {
             {renderVerificationStatus()}
           </div>
           <div className="action-row">
-            <button onClick={handleVerify}>Run Verification Tests</button>
-            {verificationOutcome && !verificationOutcome.passed ? (
+            <button disabled={!runner.ready || runner.running} onClick={handleVerify}>
+              {runner.running ? 'Running tests...' : 'Run Verification Tests'}
+            </button>
+            {verificationOutcome?.passed ? (
+              <button className="secondary" onClick={() => transition('explain_fix', { lastVerificationPassed: true })}>
+                Continue to Explain
+              </button>
+            ) : verificationOutcome ? (
               <button className="secondary" onClick={() => transition('fix', { lastVerificationPassed: false })}>Return to Fix</button>
             ) : null}
           </div>
@@ -390,8 +572,11 @@ function App() {
           </div>
           <label className="field-label">What was wrong with the original program, and how did your change fix it?</label>
           <textarea value={explanation} onChange={(e) => setExplanation(e.target.value)} rows={8} />
+          {saveError && <div className="output-box error" role="alert">{saveError}</div>}
           <div className="action-row">
-            <button disabled={!explanation.trim()} onClick={handleSubmitExplanation}>Submit Problem</button>
+            <button disabled={!explanation.trim() || responseSaving} onClick={handleSubmitExplanation}>
+              {responseSaving ? 'Saving...' : 'Submit Problem'}
+            </button>
           </div>
         </div>
       );
@@ -422,6 +607,44 @@ function App() {
       </div>
     );
   };
+
+  if (!studySession) {
+    return (
+      <div className="study-shell">
+        <section className="study-app">
+          <header className="study-header">
+            <div className="title-block">
+              <span className="app-name">Debugging Study</span>
+              <span className="problem-counter">Session setup</span>
+            </div>
+          </header>
+          <main className="study-body">
+            <div className="step-panel">
+              <div className="step-header">
+                <span className="eyebrow">Before you begin</span>
+                <h2>Enter participant code</h2>
+              </div>
+              <p className="study-text muted">Use the anonymous code assigned by the researcher. Do not enter your name.</p>
+              <label className="field-label" htmlFor="participant-code">Participant code</label>
+              <input
+                id="participant-code"
+                className="text-input"
+                value={participantCode}
+                onChange={(event) => setParticipantCode(event.target.value)}
+                autoComplete="off"
+              />
+              {sessionError && <div className="output-box error" role="alert">{sessionError}</div>}
+              <div className="action-row">
+                <button disabled={sessionStarting || !participantCode.trim()} onClick={handleStartSession}>
+                  {sessionStarting ? 'Starting session...' : 'Start Study'}
+                </button>
+              </div>
+            </div>
+          </main>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="study-shell">

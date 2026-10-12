@@ -87,6 +87,22 @@ textarea:focus {
   border-color: var(--accent);
 }
 
+.text-input {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #ffffff;
+  color: var(--text);
+  font: inherit;
+  padding: 0.7rem 0.85rem;
+}
+
+.text-input:focus {
+  outline: 3px solid rgba(47, 111, 237, 0.12);
+  border-color: var(--accent);
+}
+
 .study-shell {
   min-height: 100vh;
   display: flex;
@@ -258,6 +274,26 @@ textarea:focus {
   background: #ffffff;
 }
 
+.run-call-panel {
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  padding: 14px 16px;
+}
+
+.run-call-panel p {
+  margin: 0 0 10px;
+  color: var(--text-muted);
+}
+
+.run-call-panel pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
 .panel-label {
   font-size: 0.76rem;
   letter-spacing: 0.08em;
@@ -347,6 +383,48 @@ textarea:focus {
 
 .output-box.neutral {
   background: var(--surface-alt);
+}
+
+.verification-list {
+  display: grid;
+  gap: 10px;
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+}
+
+.verification-case {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+
+.verification-case.passed {
+  border-color: rgba(15, 138, 77, 0.28);
+}
+
+.verification-case.failed {
+  border-color: rgba(180, 35, 24, 0.3);
+}
+
+.verification-case-heading {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.verification-case.passed .verification-case-heading strong {
+  color: var(--success);
+}
+
+.verification-case.failed .verification-case-heading strong {
+  color: var(--error);
+}
+
+.verification-case code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .status-badge {

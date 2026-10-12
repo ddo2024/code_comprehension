@@ -4,6 +4,7 @@ let pyodide: any = null;
 let initInFlight: Promise<void> | null = null;
 let stdoutBuffer = '';
 let stderrBuffer = '';
+let suppressOutputEvents = false;
 
 const getNamespaceScript = (code: string) => {
   const sanitized = String(code ?? '');
@@ -28,12 +29,16 @@ const initializePyodide = async () => {
 
       pyodide.setStdout({ batched: (text: string) => {
         stdoutBuffer += text;
-        self.postMessage({ type: 'stdout', data: text });
+        if (!suppressOutputEvents) {
+          self.postMessage({ type: 'stdout', data: text });
+        }
       }});
 
       pyodide.setStderr({ batched: (text: string) => {
         stderrBuffer += text;
-        self.postMessage({ type: 'stderr', data: text });
+        if (!suppressOutputEvents) {
+          self.postMessage({ type: 'stderr', data: text });
+        }
       }});
 
       pyodide.runPython('1 + 1');
@@ -68,9 +73,10 @@ self.onmessage = async (event: MessageEvent) => {
     const started = performance.now();
     stdoutBuffer = '';
     stderrBuffer = '';
+    suppressOutputEvents = message.suppressOutput === true;
 
     try {
-      const combined = [message.runnerCode ?? '', message.code ?? ''].filter(Boolean).join('\n');
+      const combined = [message.code ?? '', message.runnerCode ?? ''].filter(Boolean).join('\n');
       pyodide.runPython(getNamespaceScript(combined));
 
       self.postMessage({
@@ -100,5 +106,7 @@ self.onmessage = async (event: MessageEvent) => {
         },
       });
     }
+
+    suppressOutputEvents = false;
   }
 };

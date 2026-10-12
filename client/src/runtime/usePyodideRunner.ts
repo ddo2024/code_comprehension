@@ -20,6 +20,7 @@ type RuntimeStore = {
   lastResult: RunResult | null;
   generation: number;
   timeoutId: number | null;
+  resolveActiveRun: ((result: RunResult) => void) | null;
 };
 
 declare global {
@@ -37,6 +38,7 @@ const getRuntimeStore = (): RuntimeStore => {
       lastResult: null,
       generation: 0,
       timeoutId: null,
+      resolveActiveRun: null,
     };
   }
 
@@ -124,6 +126,8 @@ export function usePyodideRunner() {
         setReady(true);
         setRunning(false);
         setLastRun(result);
+        runtime.resolveActiveRun?.(result);
+        runtime.resolveActiveRun = null;
 
         if (runtime.timeoutId) {
           window.clearTimeout(runtime.timeoutId);
@@ -152,6 +156,14 @@ export function usePyodideRunner() {
       runtime.ready = false;
       runtime.status = 'error';
       runtime.errorMessage = event.message || 'Python worker failed to start.';
+      runtime.resolveActiveRun?.({
+        runId: runtime.activeRunId ?? '',
+        status: 'runtime_error',
+        stdout: '',
+        stderr: runtime.errorMessage,
+        durationMs: 0,
+      });
+      runtime.resolveActiveRun = null;
       setReady(false);
       setStatus('error');
       setRunning(false);
@@ -189,14 +201,14 @@ export function usePyodideRunner() {
     applyRuntimeState();
   }, [applyRuntimeState, createWorker, runtime]);
 
-  const runCode = useCallback((code: string, runnerCode = '', timeoutMs = 5000) => {
+  const runCode = useCallback((code: string, runnerCode = '', timeoutMs = 5000, suppressOutput = false): Promise<RunResult | null> => {
     if (!runtime.worker) {
       createWorker();
     }
 
     if (!runtime.worker || runtime.status === 'loading' || runtime.status === 'restarting') {
       setErrorMessage('Preparing Python environment...');
-      return;
+      return Promise.resolve(null);
     }
 
     const runId = crypto.randomUUID();
@@ -227,6 +239,8 @@ export function usePyodideRunner() {
       };
 
       runtime.lastResult = timedOutResult;
+      runtime.resolveActiveRun?.(timedOutResult);
+      runtime.resolveActiveRun = null;
       runtime.status = 'restarting';
       setStatus('restarting');
       setRunning(false);
@@ -235,7 +249,10 @@ export function usePyodideRunner() {
       replaceWorker();
     }, timeoutMs);
 
-    runtime.worker.postMessage({ type: 'run', runId, code, runnerCode, timeoutMs });
+    return new Promise((resolve) => {
+      runtime.resolveActiveRun = resolve;
+      runtime.worker?.postMessage({ type: 'run', runId, code, runnerCode, timeoutMs, suppressOutput });
+    });
   }, [createWorker, replaceWorker, runtime]);
 
   return {
